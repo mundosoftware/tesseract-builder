@@ -13,14 +13,22 @@ jobs:
           FROM rockylinux:8
 
           # No yum update (avoids repo/mirror failures)
-          RUN dnf -y install epel-release && \
-              dnf -y install \
-                gcc gcc-c++ make cmake git \
-                autoconf automake libtool pkgconfig \
-                leptonica leptonica-devel \
-                libjpeg-turbo-devel libpng-devel libtiff-devel zlib-devel \
-                curl \
-              && dnf clean all
+          FROM rockylinux:8
+
+RUN dnf -y install dnf-plugins-core && \
+    dnf config-manager --set-enabled powertools && \
+    dnf -y install epel-release && \
+    dnf -y install \
+        gcc gcc-c++ make cmake git \
+        autoconf automake libtool \
+        pkgconf-pkg-config \
+        leptonica leptonica-devel \
+        libjpeg-turbo-devel \
+        libpng-devel \
+        libtiff-devel \
+        zlib-devel \
+        curl \
+    && dnf clean all
 
           WORKDIR /src
           RUN git clone --depth 1 https://github.com/tesseract-ocr/tesseract.git
