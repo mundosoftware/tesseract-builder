@@ -1,4 +1,4 @@
-name: Build static tesseract for shared hosting
+name: Build tesseract (static-ish) for Linux x86_64
 
 on:
   workflow_dispatch:
@@ -7,38 +7,54 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install deps
+      - name: Build tesseract in Docker (musl)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git make wget tar xz-utils
+          cat > Dockerfile <<'EOF'
+          FROM alpine:3.20
 
-      - name: Clone tesseract-static
-        run: |
-          git clone --depth 1 https://github.com/DanielMYT/tesseract-static.git
+          RUN apk add --no-cache \
+            build-base cmake ninja pkgconfig git \
+            autoconf automake libtool \
+            leptonica-dev \
+            icu-dev pango-dev cairo-dev \
+            libjpeg-turbo-dev libpng-dev tiff-dev zlib-dev \
+            wget tar
 
-      - name: Inspect repo contents
-        run: |
-          cd tesseract-static
-          ls -la
-          find . -maxdepth 2 -type f -name "*.sh" -o -name "Makefile" -o -name "*.mk" | sed -n '1,200p'
+          WORKDIR /src
 
-      - name: Package artifact (binary + tessdata)
-        run: |
-          mkdir -p out/bin/tessdata
+          # Build tesseract from source
+          RUN git clone --depth 1 https://github.com/tesseract-ocr/tesseract.git
+          WORKDIR /src/tesseract
+          RUN mkdir build && cd build && \
+              cmake -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
+                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
+                .. && \
+              ninja
 
-          # locate built tesseract binary produced by build.sh
-          TESS_PATH="$(find tesseract-static -type f -name tesseract -perm -111 | head -n 1)"
-          echo "Found tesseract at: $TESS_PATH"
-          cp "$TESS_PATH" out/bin/tesseract
-          chmod +x out/bin/tesseract
+          # Stage output
+          RUN mkdir -p /out/bin/tessdata && \
+              cp build/bin/tesseract /out/bin/tesseract && \
+              chmod +x /out/bin/tesseract
 
-          # tessdata
-          wget -O out/bin/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata
-          wget -O out/bin/tessdata/por.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata
+          # Download tessdata (eng+por)
+          RUN wget -O /out/bin/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata && \
+              wget -O /out/bin/tessdata/por.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata
 
-      - uses: actions/upload-artifact@v4
+          EOF
+
+          docker build -t tesseract-build .
+          CID=$(docker create tesseract-build)
+          docker cp "$CID:/out" ./out
+          docker rm "$CID"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: tesseract_static_out
+          name: tesseract_out
           path: out
