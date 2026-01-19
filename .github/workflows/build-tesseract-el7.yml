@@ -1,28 +1,23 @@
-name: Build tesseract binary (Rocky 8)
+FROM rockylinux:8
 
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Build inside Rocky Linux 8 container
-        run: |
-          cat > Dockerfile <<'EOF'
-          FROM rockylinux:8
-
-          # No yum update (avoids repo/mirror failures)
-          FROM rockylinux:8
-
+# ------------------------------------------------------------
+# Enable required repositories and install build dependencies
+# ------------------------------------------------------------
 RUN dnf -y install dnf-plugins-core && \
     dnf config-manager --set-enabled powertools && \
     dnf -y install epel-release && \
     dnf -y install \
-        gcc gcc-c++ make cmake git \
-        autoconf automake libtool \
+        gcc \
+        gcc-c++ \
+        make \
+        cmake \
+        git \
+        autoconf \
+        automake \
+        libtool \
         pkgconf-pkg-config \
-        leptonica leptonica-devel \
+        leptonica \
+        leptonica-devel \
         libjpeg-turbo-devel \
         libpng-devel \
         libtiff-devel \
@@ -30,33 +25,35 @@ RUN dnf -y install dnf-plugins-core && \
         curl \
     && dnf clean all
 
-          WORKDIR /src
-          RUN git clone --depth 1 https://github.com/tesseract-ocr/tesseract.git
-          WORKDIR /src/tesseract
+# ------------------------------------------------------------
+# Build Tesseract from source
+# ------------------------------------------------------------
+WORKDIR /src
 
-          RUN mkdir build && cd build && \
-              cmake .. \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
-                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
-              && make -j2
+RUN git clone --depth 1 https://github.com/tesseract-ocr/tesseract.git
 
-          RUN mkdir -p /out/bin/tessdata && \
-              cp build/bin/tesseract /out/bin/tesseract && \
-              chmod +x /out/bin/tesseract
+WORKDIR /src/tesseract
 
-          RUN curl -L -o /out/bin/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata && \
-              curl -L -o /out/bin/tessdata/por.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata
-          EOF
+RUN mkdir build && \
+    cd build && \
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
+        -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
+    && make -j$(nproc)
 
-          docker build -t tess-rocky8 .
-          CID=$(docker create tess-rocky8)
-          docker cp "$CID:/out" ./out
-          docker rm "$CID"
+# ------------------------------------------------------------
+# Package output artifacts
+# ------------------------------------------------------------
+RUN mkdir -p /out/bin/tessdata && \
+    cp build/bin/tesseract /out/bin/tesseract && \
+    chmod +x /out/bin/tesseract
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tesseract_rocky8_out
-          path: out
+# ------------------------------------------------------------
+# Download trained data
+# ------------------------------------------------------------
+RUN curl -L -o /out/bin/tessdata/eng.traineddata \
+        https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata && \
+    curl -L -o /out/bin/tessdata/por.traineddata \
+        https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata
