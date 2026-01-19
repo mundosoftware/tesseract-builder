@@ -1,0 +1,52 @@
+name: Build tesseract for EL7 (x86_64)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build inside CentOS 7 container
+        run: |
+          cat > Dockerfile <<'EOF'
+          FROM centos:7
+
+          RUN yum -y update && yum -y install epel-release && yum -y install \
+            gcc gcc-c++ make cmake3 git \
+            autoconf automake libtool pkgconfig \
+            leptonica leptonica-devel \
+            libjpeg-turbo-devel libpng-devel libtiff-devel zlib-devel \
+            && yum clean all
+
+          WORKDIR /src
+          RUN git clone --depth 1 https://github.com/tesseract-ocr/tesseract.git
+          WORKDIR /src/tesseract
+
+          RUN mkdir build && cd build && \
+              cmake3 .. \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
+                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
+              && make -j2
+
+          RUN mkdir -p /out/bin/tessdata && \
+              cp build/bin/tesseract /out/bin/tesseract && \
+              chmod +x /out/bin/tesseract
+
+          # tessdata (eng+por)
+          RUN curl -L -o /out/bin/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata && \
+              curl -L -o /out/bin/tessdata/por.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata
+          EOF
+
+          docker build -t tess-el7 .
+          CID=$(docker create tess-el7)
+          docker cp "$CID:/out" ./out
+          docker rm "$CID"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tesseract_el7_out
+          path: out
