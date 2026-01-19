@@ -1,0 +1,46 @@
+name: Build static tesseract for shared hosting
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git make wget tar xz-utils
+
+      - name: Clone tesseract-static
+        run: |
+          git clone --depth 1 https://github.com/DanielMYT/tesseract-static.git
+
+      - name: Build (musl static)
+        run: |
+          cd tesseract-static
+          # keep it compatible and predictable
+          export CFLAGS="-O2 -pipe -fno-omit-frame-pointer -march=x86-64 -mtune=generic"
+          export CXXFLAGS="-O2 -pipe -fno-omit-frame-pointer -march=x86-64 -mtune=generic"
+          bash build.sh
+
+      - name: Package artifact (binary + tessdata)
+        run: |
+          mkdir -p out/bin/tessdata
+
+          # locate built tesseract binary produced by build.sh
+          TESS_PATH="$(find tesseract-static -type f -name tesseract -perm -111 | head -n 1)"
+          echo "Found tesseract at: $TESS_PATH"
+          cp "$TESS_PATH" out/bin/tesseract
+          chmod +x out/bin/tesseract
+
+          # tessdata
+          wget -O out/bin/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata
+          wget -O out/bin/tessdata/por.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tesseract_static_out
+          path: out
