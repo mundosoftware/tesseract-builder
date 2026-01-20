@@ -50,13 +50,22 @@ jobs:
           WORKDIR /src/tesseract
 
             # Install Developer Toolset 10 (GCC 10) and related packages
-            # Ensure SCL repo files point to vault.centos.org (EL7 is EOL)
-            RUN yum -y install centos-release-scl && \
-              # rewrite any SCL repo files to use vault mirrors like the base repos
-              sed -i 's/mirrorlist=/#mirrorlist=/g' /etc/yum.repos.d/CentOS-SCLo* 2>/dev/null || true && \
-              sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-SCLo* 2>/dev/null || true && \
-              # allow yum to skip unavailable repos as a fallback
-              yum-config-manager --save --setopt=centos-sclo-rh.skip_if_unavailable=true || true && \
+            # Robustly rewrite SCL repo entries to vault.centos.org (EL7 is EOL),
+            # mark SCL repos as skippable if unavailable, and print repos for debugging.
+            RUN yum -y install centos-release-scl yum-utils && \
+              # For any SCL repo file: comment out mirrorlist lines and replace mirror.centos.org with vault.centos.org
+              for f in /etc/yum.repos.d/*scl* /etc/yum.repos.d/CentOS-SCLo* 2>/dev/null; do \
+                [ -f "$f" ] || continue; \
+                sed -i 's/^mirrorlist=/#mirrorlist=/g' "$f" || true; \
+                sed -i 's|mirror.centos.org|vault.centos.org/centos|g' "$f" || true; \
+              done && \
+              # Set skip_if_unavailable for common SCL repos to avoid transient failures
+              yum-config-manager --save --setopt=centos-sclo-sclo.skip_if_unavailable=true || true; \
+              yum-config-manager --save --setopt=centos-sclo-rh.skip_if_unavailable=true || true; \
+              # Show resulting repo files to help debugging if things still fail
+              echo '--- SCL repo files ---' && ls -l /etc/yum.repos.d/*scl* 2>/dev/null || true; \
+              grep -H "^baseurl\|^mirrorlist\|^name\|^enabled" /etc/yum.repos.d/*scl* 2>/dev/null || true; \
+              # Install devtoolset packages
               yum -y install devtoolset-10-gcc devtoolset-10-gcc-c++ && \
               yum clean all
 
