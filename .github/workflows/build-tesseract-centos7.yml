@@ -49,8 +49,16 @@ jobs:
 
           WORKDIR /src/tesseract
 
-          # Build
-          RUN mkdir -p build && cd build && \
+          # Install Developer Toolset 10 (GCC 10) and related packages
+          RUN yum -y install centos-release-scl && \
+              yum -y install devtoolset-10-gcc devtoolset-10-gcc-c++ && \
+              yum clean all
+
+          # Build (run inside SCL-enabled environment so CMake sees GCC10/C++17)
+          RUN scl enable devtoolset-10 -- bash -c '\
+              set -euo pipefail && \
+              which gcc && gcc --version && which g++ && g++ --version && \
+              mkdir -p build && cd build && \
               cmake .. \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_TRAINING_TOOLS=OFF \
@@ -58,7 +66,7 @@ jobs:
                 -DDISABLE_ARCHIVE=ON \
                 -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
                 -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
-              && make -j2
+              && make -j2'
 
           # Stage output files
           RUN mkdir -p /out/bin/tessdata && \
