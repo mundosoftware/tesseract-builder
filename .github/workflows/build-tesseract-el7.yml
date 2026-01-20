@@ -47,6 +47,7 @@ jobs:
                 -DBUILD_TRAINING_TOOLS=OFF \
                 -DDISABLE_CURL=ON \
                 -DDISABLE_ARCHIVE=ON \
+                -DCMAKE_EXE_LINKER_FLAGS="-lstdc++fs" \
                 -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
                 -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
               && make -j2
