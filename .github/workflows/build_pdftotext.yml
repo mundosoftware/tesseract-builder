@@ -72,4 +72,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pdftotext-el7-bundle
-          path: pdftotext-el7-bundle.tar.gz
+          path: /home/runner/work/<repo>/<repo>/pdftotext-el7-bundle.tar.gz
