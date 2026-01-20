@@ -24,16 +24,15 @@ jobs:
               sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-Base.repo
 
           # Use bash for RUN so we can source/enable toolsets cleanly
-          SHELL ["/bin/bash", "-lc"]
+          SHELL ["/bin/bash", "-c"]
 
-          # Base deps + SCL (for GCC 10)
-          RUN yum -y install epel-release centos-release-scl && \
+          # Base deps
+          RUN yum -y install epel-release && \
               yum -y install \
                 curl ca-certificates which tar gzip xz bash \
                 git make autoconf automake libtool pkgconfig \
                 leptonica leptonica-devel \
                 libjpeg-turbo-devel libpng-devel libtiff-devel zlib-devel \
-                devtoolset-10 \
               && yum clean all
 
           # Install modern CMake (Tesseract requires >= 3.18)
@@ -57,22 +56,26 @@ jobs:
 
           WORKDIR /src/tesseract
 
+          # Install Developer Toolset 10 for GCC 10 on CentOS 7
+          RUN yum install -y centos-release-scl && \
+              yum install -y devtoolset-10 && \
+              source /opt/rh/devtoolset-10/enable
+
           # Build tesseract (with GCC10), training tools OFF, curl/archive OFF (smaller)
           # We intentionally target generic x86-64 (no AVX requirement).
-          RUN scl enable devtoolset-10 -- bash -lc '\
-              set -euo pipefail; \
-              gcc --version; g++ --version; \
-              mkdir -p build && cd build; \
+          RUN source /opt/rh/devtoolset-10/enable && \
+              set -euo pipefail && \
+              gcc --version && g++ --version && \
+              mkdir -p build && cd build && \
               cmake .. \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_TRAINING_TOOLS=OFF \
                 -DDISABLE_CURL=ON \
                 -DDISABLE_ARCHIVE=ON \
                 -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
-                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic"; \
-              make -j2; \
-              make install \
-          '
+                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" && \
+              make -j2 && \
+              make install
 
           # Package into /out
           RUN mkdir -p /out/bin /out/bin/tessdata && \
