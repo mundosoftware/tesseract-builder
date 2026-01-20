@@ -32,6 +32,10 @@ jobs:
                 curl \
               && dnf clean all
 
+          # Newer GCC toolset to avoid std::filesystem link issues on GCC 8
+          RUN dnf -y install gcc-toolset-11 gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
+              && dnf clean all
+
           WORKDIR /src
 
           # Get tesseract source
@@ -40,14 +44,16 @@ jobs:
 
           # Build (Fix 1): disable training tools (avoids ICU requirement)
           # Also disable curl/libarchive features to reduce runtime deps.
-          RUN mkdir -p build && cd build && \
+          RUN source /opt/rh/gcc-toolset-11/enable && \
+              mkdir -p build && cd build && \
               cmake .. \
+                -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-11/root/usr/bin/gcc \
+                -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-11/root/usr/bin/g++ \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_SHARED_LIBS=OFF \
                 -DBUILD_TRAINING_TOOLS=OFF \
                 -DDISABLE_CURL=ON \
                 -DDISABLE_ARCHIVE=ON \
-                -DCMAKE_EXE_LINKER_FLAGS="-Wl,--no-as-needed -lstdc++fs" \
                 -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
                 -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
               && make -j2
