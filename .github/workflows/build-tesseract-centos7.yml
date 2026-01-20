@@ -1,4 +1,5 @@
-name: Build Tesseract for EL7 (HostGator safe)
+# .github/workflows/build-tesseract-el7.yml
+name: Build Tesseract for CentOS 7 (EL7) x86_64
 
 on:
   workflow_dispatch:
@@ -8,28 +9,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Build inside CentOS 7 (vault + modern CMake)
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build in CentOS 7 container and package artifacts
         run: |
-          cat > Dockerfile <<'EOF'
+          set -euo pipefail
+
+          cat > Dockerfile <<'DOCKERFILE'
           FROM centos:7
 
-          # CentOS 7 is EOL: point repos to vault
+          # CentOS 7 is EOL; switch repos to vault
           RUN sed -i 's/mirrorlist=/#mirrorlist=/g' /etc/yum.repos.d/CentOS-Base.repo && \
               sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-Base.repo
 
-          # Core build deps (EL7)
-          RUN yum -y install epel-release && \
+          # Use bash for RUN so we can source/enable toolsets cleanly
+          SHELL ["/bin/bash", "-lc"]
+
+          # Base deps + SCL (for GCC 10)
+          RUN yum -y install epel-release centos-release-scl && \
               yum -y install \
-                gcc gcc-c++ make git \
-                autoconf automake libtool pkgconfig \
+                curl ca-certificates which tar gzip xz bash \
+                git make autoconf automake libtool pkgconfig \
                 leptonica leptonica-devel \
                 libjpeg-turbo-devel libpng-devel libtiff-devel zlib-devel \
-                curl ca-certificates which tar gzip xz bash \
+                devtoolset-10 \
               && yum clean all
 
-          # --- Install modern CMake (build tool only) ---
-          # Tesseract needs >= 3.18; EPEL on EL7 is 3.17.5.
-          # Use Kitware's official prebuilt installer.
+          # Install modern CMake (Tesseract requires >= 3.18)
           ARG CMAKE_VER=3.27.9
           RUN mkdir -p /opt/cmake && \
               curl -fsSL -o /tmp/cmake.sh \
@@ -43,54 +50,89 @@ jobs:
 
           WORKDIR /src
 
-          # Pin to a stable release tag (reproducible)
-          ARG TESS_TAG=5.3.3
+          # Pin versions for reproducibility (adjust if you want)
+          ARG TESS_TAG=5.3.4
+
           RUN git clone --depth 1 --branch ${TESS_TAG} https://github.com/tesseract-ocr/tesseract.git
 
           WORKDIR /src/tesseract
 
-          # Build
-          RUN mkdir -p build && cd build && \
+          # Build tesseract (with GCC10), training tools OFF, curl/archive OFF (smaller)
+          # We intentionally target generic x86-64 (no AVX requirement).
+          RUN scl enable devtoolset-10 -- bash -lc '\
+              set -euo pipefail; \
+              gcc --version; g++ --version; \
+              mkdir -p build && cd build; \
               cmake .. \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_TRAINING_TOOLS=OFF \
                 -DDISABLE_CURL=ON \
                 -DDISABLE_ARCHIVE=ON \
                 -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
-                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
-              && make -j2
+                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic"; \
+              make -j2; \
+              make install \
+          '
 
-          # Stage output files
-          RUN mkdir -p /out/bin/tessdata && \
-              cp -v /src/tesseract/build/bin/tesseract /out/bin/tesseract
-
-          # Wrapper script (sets TESSDATA_PREFIX)
-          RUN cat > /out/bin/run_tesseract.sh <<'SH' && chmod +x /out/bin/run_tesseract.sh
-          #!/usr/bin/env bash
-          set -euo pipefail
-          HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export TESSDATA_PREFIX="${HERE}"
-          exec "${HERE}/tesseract" "$@"
-          SH
-
-          # Download tessdata (eng + por)
-          RUN curl -fsSL -o /out/bin/tessdata/eng.traineddata \
+          # Package into /out
+          RUN mkdir -p /out/bin /out/bin/tessdata && \
+              # Installed binary should be in /usr/local/bin/tesseract
+              cp -f /usr/local/bin/tesseract /out/bin/tesseract && \
+              chmod 0755 /out/bin/tesseract && \
+              # Simple wrapper to ensure TESSDATA_PREFIX points to bundled tessdata
+              cat > /out/bin/run_tesseract.sh <<'SH' && \
+              chmod 0755 /out/bin/run_tesseract.sh && \
+              # Download tessdata (eng + por)
+              curl -fsSL -o /out/bin/tessdata/eng.traineddata \
                 https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata && \
               curl -fsSL -o /out/bin/tessdata/por.traineddata \
-                https://github.com/tesseract-ocr/tessdata_best/raw/main/por.traineddata
+                https://github.com/tesseract-ocr/tessdata_best/raw/main/por.traineddata && \
+              # Smoke test inside container (should print version)
+              /out/bin/tesseract --version >/out/tesseract_version.txt || true && \
+              bash /out/bin/run_tesseract.sh --version >/out/tesseract_wrapper_version.txt || true && \
+              # Create tar.gz
+              tar -C /out -czf /out/tesseract-el7-x86_64.tar.gz bin tesseract_version.txt tesseract_wrapper_version.txt
 
-          # Package
-          WORKDIR /out
-          RUN tar -czf /out/tesseract-el7.tar.gz bin
-          EOF
+          SH
+          #!/usr/bin/env bash
+          set -euo pipefail
 
-          docker build -t tesseract-el7 .
-          docker create --name tesseract-el7-container tesseract-el7
-          docker cp tesseract-el7-container:/out/tesseract-el7.tar.gz ./tesseract-el7.tar.gz
-          docker rm -f tesseract-el7-container
+          # If called with --version (no input), forward directly
+          if [[ "${1-}" == "--version" ]]; then
+            export TESSDATA_PREFIX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tessdata"
+            exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tesseract" --version
+          fi
+
+          # Normal mode:
+          # run_tesseract.sh <image_path> <output_base> [tesseract args...]
+          if [[ $# -lt 2 ]]; then
+            echo "Usage: $0 <image_path> <output_base> [tesseract args...]" >&2
+            exit 2
+          fi
+
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export TESSDATA_PREFIX="$SCRIPT_DIR/tessdata"
+
+          IMG="$1"
+          OUTBASE="$2"
+          shift 2
+
+          exec "$SCRIPT_DIR/tesseract" "$IMG" "$OUTBASE" "$@"
+          SH
+          DOCKERFILE
+
+          docker build -t tesseract-el7-build .
+
+          # Extract tarball from container
+          CID=$(docker create tesseract-el7-build)
+          docker cp "$CID:/out/tesseract-el7-x86_64.tar.gz" ./tesseract-el7-x86_64.tar.gz
+          docker rm -f "$CID" >/dev/null
+
+          echo "Built: ./tesseract-el7-x86_64.tar.gz"
+          ls -lh ./tesseract-el7-x86_64.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tesseract-el7
-          path: tesseract-el7.tar.gz
+          name: tesseract-el7-x86_64
+          path: tesseract-el7-x86_64.tar.gz
