@@ -7,69 +7,84 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Build inside CentOS 7 container (fixed vault repos)
+      - name: Checkout (creates workspace)
+        uses: actions/checkout@v4
+
+      - name: Build inside CentOS 7 container (write tarball into github.workspace)
         run: |
-          docker run --rm -v "$PWD:/work" -w /work centos:7 bash -lc '
-            set -euo pipefail
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          pwd
+          ls -la
 
-            echo "nameserver 1.1.1.1" > /etc/resolv.conf
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            centos:7 bash -lc '
+              set -euo pipefail
 
-            cat > /etc/yum.repos.d/CentOS-Base.repo << "EOF"
-            [base]
-            name=CentOS-7 - Base
-            baseurl=http://vault.centos.org/7.9.2009/os/$basearch/
-            gpgcheck=0
-            enabled=1
+              echo "nameserver 1.1.1.1" > /etc/resolv.conf
 
-            [updates]
-            name=CentOS-7 - Updates
-            baseurl=http://vault.centos.org/7.9.2009/updates/$basearch/
-            gpgcheck=0
-            enabled=1
+              cat > /etc/yum.repos.d/CentOS-Base.repo << "EOF"
+              [base]
+              name=CentOS-7 - Base
+              baseurl=http://vault.centos.org/7.9.2009/os/$basearch/
+              gpgcheck=0
+              enabled=1
 
-            [extras]
-            name=CentOS-7 - Extras
-            baseurl=http://vault.centos.org/7.9.2009/extras/$basearch/
-            gpgcheck=0
-            enabled=1
-            EOF
+              [updates]
+              name=CentOS-7 - Updates
+              baseurl=http://vault.centos.org/7.9.2009/updates/$basearch/
+              gpgcheck=0
+              enabled=1
 
-            yum clean all
-            yum makecache fast
-            yum -y install poppler-utils
+              [extras]
+              name=CentOS-7 - Extras
+              baseurl=http://vault.centos.org/7.9.2009/extras/$basearch/
+              gpgcheck=0
+              enabled=1
+              EOF
 
-            rm -rf /work/out
-            mkdir -p /work/out/bin /work/out/lib
+              yum clean all
+              yum makecache fast
+              yum -y install poppler-utils
 
-            cp -v /usr/bin/pdftotext /work/out/bin/
+              rm -rf /work/out
+              mkdir -p /work/out/bin /work/out/lib
 
-            ldd /usr/bin/pdftotext | awk "/=>/ {print \$3}" | while read -r lib; do
-              if [ -f "$lib" ]; then
-                cp -v "$lib" /work/out/lib/
+              cp -v /usr/bin/pdftotext /work/out/bin/
+
+              ldd /usr/bin/pdftotext | awk "/=>/ {print \$3}" | while read -r lib; do
+                if [ -f "$lib" ]; then
+                  cp -v "$lib" /work/out/lib/
+                fi
+              done
+
+              if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
+                cp -v /lib64/ld-linux-x86-64.so.2 /work/out/lib/
               fi
-            done
 
-            if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
-              cp -v /lib64/ld-linux-x86-64.so.2 /work/out/lib/
-            fi
+              cat > /work/out/pdftotext.sh << "EOF"
+              #!/bin/sh
+              DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+              export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
+              exec "$DIR/bin/pdftotext" "$@"
+              EOF
+              chmod +x /work/out/pdftotext.sh
 
-            cat > /work/out/pdftotext.sh << "EOF"
-            #!/bin/sh
-            DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-            export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
-            exec "$DIR/bin/pdftotext" "$@"
-            EOF
-            chmod +x /work/out/pdftotext.sh
+              # ✅ Create tarball in the mounted workspace
+              tar -czf /work/pdftotext-el7-bundle.tar.gz -C /work/out .
 
-            # ✅ Write tarball directly into mounted folder
-            tar -czf /work/pdftotext-el7-bundle.tar.gz -C /work/out .
+              echo "=== inside container /work ==="
+              ls -la /work
+            '
 
-            echo "=== Files in /work ==="
-            ls -la /work
-          '
+          echo "=== on runner after docker ==="
+          ls -la
+          ls -la pdftotext-el7-bundle.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: pdftotext-el7-bundle
-          path: /home/runner/work/<repo>/<repo>/pdftotext-el7-bundle.tar.gz
+          path: pdftotext-el7-bundle.tar.gz
+          if-no-files-found: error
