@@ -12,10 +12,8 @@ jobs:
           docker run --rm -v "$PWD:/work" -w /work centos:7 bash -lc '
             set -euo pipefail
 
-            # Fix DNS just in case (rarely needed, but safe)
             echo "nameserver 1.1.1.1" > /etc/resolv.conf
 
-            # CentOS 7 is EOL. Use vault.centos.org for 7.9.2009.
             cat > /etc/yum.repos.d/CentOS-Base.repo << "EOF"
             [base]
             name=CentOS-7 - Base
@@ -38,35 +36,36 @@ jobs:
 
             yum clean all
             yum makecache fast
-
             yum -y install poppler-utils
 
-            mkdir -p out/bin out/lib
+            rm -rf /work/out
+            mkdir -p /work/out/bin /work/out/lib
 
-            cp -v /usr/bin/pdftotext out/bin/
+            cp -v /usr/bin/pdftotext /work/out/bin/
 
-            # Copy shared libs required by pdftotext
             ldd /usr/bin/pdftotext | awk "/=>/ {print \$3}" | while read -r lib; do
               if [ -f "$lib" ]; then
-                cp -v "$lib" out/lib/
+                cp -v "$lib" /work/out/lib/
               fi
             done
 
-            # Copy runtime loader
             if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
-              cp -v /lib64/ld-linux-x86-64.so.2 out/lib/
+              cp -v /lib64/ld-linux-x86-64.so.2 /work/out/lib/
             fi
 
-            # Wrapper
-            cat > out/pdftotext.sh << "EOF"
+            cat > /work/out/pdftotext.sh << "EOF"
             #!/bin/sh
             DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
             export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
             exec "$DIR/bin/pdftotext" "$@"
             EOF
-            chmod +x out/pdftotext.sh
+            chmod +x /work/out/pdftotext.sh
 
-            tar -czf pdftotext-el7-bundle.tar.gz -C out .
+            # ✅ Write tarball directly into mounted folder
+            tar -czf /work/pdftotext-el7-bundle.tar.gz -C /work/out .
+
+            echo "=== Files in /work ==="
+            ls -la /work
           '
 
       - name: Upload artifact
