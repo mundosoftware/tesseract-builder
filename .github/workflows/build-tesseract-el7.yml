@@ -12,9 +12,19 @@ jobs:
           cat > Dockerfile <<'EOF'
           FROM rockylinux:8
 
-          # No yum update (avoids repo/mirror failures)
-          RUN dnf -y install epel-release && \
-              dnf -y install \
+          # Install plugin tools so we can enable repos
+          RUN dnf -y install dnf-plugins-core && dnf clean all
+
+          # Enable EPEL
+          RUN dnf -y install epel-release && dnf clean all
+
+          # Enable PowerTools/CRB (needed for many -devel packages)
+          RUN (dnf config-manager --set-enabled powertools || true) && \
+              (dnf config-manager --set-enabled crb || true) && \
+              dnf -y makecache
+
+          # Build deps
+          RUN dnf -y install \
                 gcc gcc-c++ make cmake git \
                 autoconf automake libtool pkgconfig \
                 leptonica leptonica-devel \
