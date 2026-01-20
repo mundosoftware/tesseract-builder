@@ -54,8 +54,8 @@ jobs:
             # mark SCL repos as skippable if unavailable, and print repos for debugging.
             RUN yum -y install centos-release-scl yum-utils && \
               # For any SCL repo file: comment out mirrorlist lines and replace mirror.centos.org with vault.centos.org
-              for f in /etc/yum.repos.d/*scl* /etc/yum.repos.d/CentOS-SCLo* 2>/dev/null; do \
-                [ -f "$f" ] || continue; \
+              for f in /etc/yum.repos.d/*scl* /etc/yum.repos.d/CentOS-SCLo*; do \
+                [ -e "$f" ] || continue; \
                 sed -i 's/^mirrorlist=/#mirrorlist=/g' "$f" || true; \
                 sed -i 's|mirror.centos.org|vault.centos.org/centos|g' "$f" || true; \
               done && \
