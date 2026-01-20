@@ -10,82 +10,86 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build bundle in CentOS 7 container (no heredocs)
+      - name: Create build script
         run: |
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          ls -la
+          cat > build_in_centos7.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
 
+          # Some environments benefit from explicit DNS
+          echo "nameserver 1.1.1.1" > /etc/resolv.conf || true
+
+          # CentOS 7 is EOL; use vault repos (7.9.2009)
+          cat > /etc/yum.repos.d/CentOS-Base.repo <<'EOF'
+          [base]
+          name=CentOS-7 - Base
+          baseurl=http://vault.centos.org/7.9.2009/os/$basearch/
+          gpgcheck=0
+          enabled=1
+
+          [updates]
+          name=CentOS-7 - Updates
+          baseurl=http://vault.centos.org/7.9.2009/updates/$basearch/
+          gpgcheck=0
+          enabled=1
+
+          [extras]
+          name=CentOS-7 - Extras
+          baseurl=http://vault.centos.org/7.9.2009/extras/$basearch/
+          gpgcheck=0
+          enabled=1
+          EOF
+
+          yum clean all
+          yum makecache fast
+          yum -y install poppler-utils
+
+          rm -rf /work/out
+          mkdir -p /work/out/bin /work/out/lib
+
+          cp -v /usr/bin/pdftotext /work/out/bin/
+
+          # Bundle shared libs required by pdftotext
+          ldd /usr/bin/pdftotext | awk '/=>/ {print $3}' | while read -r lib; do
+            if [ -f "$lib" ]; then
+              cp -v "$lib" /work/out/lib/
+            fi
+          done
+
+          # Loader (often present)
+          if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
+            cp -v /lib64/ld-linux-x86-64.so.2 /work/out/lib/
+          fi
+
+          # Wrapper script
+          cat > /work/out/pdftotext.sh <<'EOF'
+          #!/bin/sh
+          DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+          export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
+          exec "$DIR/bin/pdftotext" "$@"
+          EOF
+          chmod +x /work/out/pdftotext.sh
+
+          # Create tarball in mounted workspace
+          tar -czf /work/pdftotext-el7-bundle.tar.gz -C /work/out .
+
+          echo "Built tarball:"
+          ls -la /work/pdftotext-el7-bundle.tar.gz
+          SCRIPT
+
+          chmod +x build_in_centos7.sh
+          ls -la build_in_centos7.sh
+
+      - name: Build inside CentOS 7 container
+        run: |
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:/work" \
             -w /work \
-            centos:7 bash -lc '
-              set -euo pipefail
+            centos:7 bash -lc "/work/build_in_centos7.sh"
 
-              echo "nameserver 1.1.1.1" > /etc/resolv.conf
-
-              # Write CentOS 7 vault repos safely (no heredoc)
-              printf "%s\n" \
-"[base]" \
-"name=CentOS-7 - Base" \
-"baseurl=http://vault.centos.org/7.9.2009/os/\$basearch/" \
-"gpgcheck=0" \
-"enabled=1" \
-"" \
-"[updates]" \
-"name=CentOS-7 - Updates" \
-"baseurl=http://vault.centos.org/7.9.2009/updates/\$basearch/" \
-"gpgcheck=0" \
-"enabled=1" \
-"" \
-"[extras]" \
-"name=CentOS-7 - Extras" \
-"baseurl=http://vault.centos.org/7.9.2009/extras/\$basearch/" \
-"gpgcheck=0" \
-"enabled=1" \
-> /etc/yum.repos.d/CentOS-Base.repo
-
-              yum clean all
-              yum makecache fast
-              yum -y install poppler-utils
-
-              rm -rf /work/out
-              mkdir -p /work/out/bin /work/out/lib
-
-              cp -v /usr/bin/pdftotext /work/out/bin/
-
-              # Bundle libs
-              ldd /usr/bin/pdftotext | awk "/=>/ {print \$3}" | while read -r lib; do
-                if [ -f "$lib" ]; then
-                  cp -v "$lib" /work/out/lib/
-                fi
-              done
-
-              # Loader (sometimes helps)
-              if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
-                cp -v /lib64/ld-linux-x86-64.so.2 /work/out/lib/
-              fi
-
-              # Wrapper (no heredoc)
-              printf "%s\n" \
-"#!/bin/sh" \
-"DIR=\"\$(CDPATH= cd -- \"\$(dirname -- \"\$0\")\" && pwd)\"" \
-"export LD_LIBRARY_PATH=\"\$DIR/lib:\$LD_LIBRARY_PATH\"" \
-"exec \"\$DIR/bin/pdftotext\" \"\$@\"" \
-> /work/out/pdftotext.sh
-
-              chmod +x /work/out/pdftotext.sh
-
-              # Create tarball in the mounted workspace
-              tar -czf /work/pdftotext-el7-bundle.tar.gz -C /work/out .
-
-              echo "=== inside container /work ==="
-              ls -la /work
-            '
-
-          echo "=== on runner after docker ==="
-          ls -la
-          test -f pdftotext-el7-bundle.tar.gz
-          ls -la pdftotext-el7-bundle.tar.gz
+          echo "On runner:"
+          ls -la "${GITHUB_WORKSPACE}"
+          ls -la "${GITHUB_WORKSPACE}/pdftotext-el7-bundle.tar.gz"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
