@@ -7,33 +7,40 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Build inside CentOS 7 container
+      - name: Build inside CentOS 7 container (use vault repos)
         run: |
           docker run --rm -v "$PWD:/work" -w /work centos:7 bash -lc '
             set -euo pipefail
 
-            yum -y install yum-utils epel-release
+            # CentOS 7 is EOL; mirrorlist often fails.
+            # Switch repos to vault.centos.org (static archive).
+            sed -i "s|mirrorlist=|#mirrorlist=|g" /etc/yum.repos.d/CentOS-Base.repo
+            sed -i "s|#baseurl=http://mirror.centos.org/centos|baseurl=http://vault.centos.org|g" /etc/yum.repos.d/CentOS-Base.repo
+
+            # Optional: make yum more tolerant
+            yum -y install yum-utils || true
+
+            yum clean all
+            yum makecache fast
+
             yum -y install poppler-utils
 
-            # Collect binary + dependencies
             mkdir -p out/bin out/lib
 
-            # pdftotext location on EL7
             cp -v /usr/bin/pdftotext out/bin/
 
-            # Copy all shared libs required by pdftotext
+            # Copy shared libs required by pdftotext
             ldd /usr/bin/pdftotext | awk "/=>/ {print \$3}" | while read -r lib; do
               if [ -f "$lib" ]; then
                 cp -v "$lib" out/lib/
               fi
             done
 
-            # Also copy the runtime loader (sometimes needed in weird environments)
+            # Copy runtime loader (sometimes helps)
             if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
               cp -v /lib64/ld-linux-x86-64.so.2 out/lib/
             fi
 
-            # Wrapper that forces our bundled libs
             cat > out/pdftotext.sh << "EOF"
             #!/bin/sh
             DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -42,7 +49,6 @@ jobs:
             EOF
             chmod +x out/pdftotext.sh
 
-            # Pack
             tar -czf pdftotext-el7-bundle.tar.gz -C out .
           '
 
