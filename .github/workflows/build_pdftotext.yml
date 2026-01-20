@@ -7,18 +7,34 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Build inside CentOS 7 container (use vault repos)
+      - name: Build inside CentOS 7 container (fixed vault repos)
         run: |
           docker run --rm -v "$PWD:/work" -w /work centos:7 bash -lc '
             set -euo pipefail
 
-            # CentOS 7 is EOL; mirrorlist often fails.
-            # Switch repos to vault.centos.org (static archive).
-            sed -i "s|mirrorlist=|#mirrorlist=|g" /etc/yum.repos.d/CentOS-Base.repo
-            sed -i "s|#baseurl=http://mirror.centos.org/centos|baseurl=http://vault.centos.org|g" /etc/yum.repos.d/CentOS-Base.repo
+            # Fix DNS just in case (rarely needed, but safe)
+            echo "nameserver 1.1.1.1" > /etc/resolv.conf
 
-            # Optional: make yum more tolerant
-            yum -y install yum-utils || true
+            # CentOS 7 is EOL. Use vault.centos.org for 7.9.2009.
+            cat > /etc/yum.repos.d/CentOS-Base.repo << "EOF"
+            [base]
+            name=CentOS-7 - Base
+            baseurl=http://vault.centos.org/7.9.2009/os/$basearch/
+            gpgcheck=0
+            enabled=1
+
+            [updates]
+            name=CentOS-7 - Updates
+            baseurl=http://vault.centos.org/7.9.2009/updates/$basearch/
+            gpgcheck=0
+            enabled=1
+
+            [extras]
+            name=CentOS-7 - Extras
+            baseurl=http://vault.centos.org/7.9.2009/extras/$basearch/
+            gpgcheck=0
+            enabled=1
+            EOF
 
             yum clean all
             yum makecache fast
@@ -36,11 +52,12 @@ jobs:
               fi
             done
 
-            # Copy runtime loader (sometimes helps)
+            # Copy runtime loader
             if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
               cp -v /lib64/ld-linux-x86-64.so.2 out/lib/
             fi
 
+            # Wrapper
             cat > out/pdftotext.sh << "EOF"
             #!/bin/sh
             DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
