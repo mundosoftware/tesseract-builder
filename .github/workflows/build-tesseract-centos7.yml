@@ -1,0 +1,72 @@
+name: Build tesseract for CentOS 7 (EL7-compatible)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build inside CentOS 7 container (vault repos)
+        run: |
+          cat > Dockerfile <<'EOF'
+          FROM centos:7
+
+          # Switch yum repos to vault (CentOS 7 mirrors are retired)
+          RUN sed -i 's/mirrorlist=/#mirrorlist=/g' /etc/yum.repos.d/CentOS-Base.repo && \
+              sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-Base.repo
+
+          # Install deps (NO yum update)
+          RUN yum -y install epel-release && \
+              yum -y install \
+                gcc gcc-c++ make cmake3 git \
+                autoconf automake libtool pkgconfig \
+                leptonica leptonica-devel \
+                libjpeg-turbo-devel libpng-devel libtiff-devel zlib-devel \
+                curl \
+              && yum clean all
+
+          WORKDIR /src
+          RUN git clone --depth 1 https://github.com/tesseract-ocr/tesseract.git
+          WORKDIR /src/tesseract
+
+          RUN mkdir -p build && cd build && \
+              cmake3 .. \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_TRAINING_TOOLS=OFF \
+                -DDISABLE_CURL=ON \
+                -DDISABLE_ARCHIVE=ON \
+                -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic -mno-avx512f -mno-avx512bw -mno-avx512dq -mno-avx512vl" \
+                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic -mno-avx512f -mno-avx512bw -mno-avx512dq -mno-avx512vl" \
+              && make -j2
+
+          # Package output
+          RUN mkdir -p /out/bin/tessdata && \
+              cp build/bin/tesseract /out/bin/tesseract && \
+              chmod +x /out/bin/tesseract
+
+          # Download tessdata (eng+por)
+          RUN curl -L -o /out/bin/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata && \
+              curl -L -o /out/bin/tessdata/por.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata
+
+          # Wrapper
+          RUN cat > /out/bin/run_tesseract.sh <<'SH' && chmod +x /out/bin/run_tesseract.sh
+          #!/usr/bin/env bash
+          set -euo pipefail
+          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export TESSDATA_PREFIX="${DIR}"
+          exec "${DIR}/tesseract" "$@"
+          SH
+          EOF
+
+          docker build -t tess-el7 .
+          CID=$(docker create tess-el7)
+          rm -rf out && mkdir -p out
+          docker cp "$CID:/out" ./out
+          docker rm "$CID"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tesseract_el7_out
+          path: out
