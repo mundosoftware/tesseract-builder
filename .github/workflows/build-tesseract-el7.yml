@@ -1,4 +1,4 @@
-name: Build tesseract binary (Rocky 8)
+name: Build tesseract static-ish binary (Rocky 8) - Fix 1
 
 on:
   workflow_dispatch:
@@ -9,21 +9,21 @@ jobs:
     steps:
       - name: Build inside Rocky Linux 8 container
         run: |
+          set -euo pipefail
+
           cat > Dockerfile <<'EOF'
           FROM rockylinux:8
 
-          # Install plugin tools so we can enable repos
+          # Core tooling + EPEL
           RUN dnf -y install dnf-plugins-core && dnf clean all
-
-          # Enable EPEL
           RUN dnf -y install epel-release && dnf clean all
 
-          # Enable PowerTools/CRB (needed for many -devel packages)
+          # Enable PowerTools (Rocky 8) to get -devel packages like leptonica-devel
           RUN (dnf config-manager --set-enabled powertools || true) && \
-              (dnf config-manager --set-enabled crb || true) && \
+              (dnf config-manager --set-enabled PowerTools || true) && \
               dnf -y makecache
 
-          # Build deps
+          # Build deps (minimal)
           RUN dnf -y install \
                 gcc gcc-c++ make cmake git \
                 autoconf automake libtool pkgconfig \
@@ -33,29 +33,49 @@ jobs:
               && dnf clean all
 
           WORKDIR /src
+
+          # Get tesseract source
           RUN git clone --depth 1 https://github.com/tesseract-ocr/tesseract.git
           WORKDIR /src/tesseract
 
-          RUN mkdir build && cd build && \
+          # Build (Fix 1): disable training tools (avoids ICU requirement)
+          # Also disable curl/libarchive features to reduce runtime deps.
+          RUN mkdir -p build && cd build && \
               cmake .. \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_SHARED_LIBS=OFF \
+                -DBUILD_TRAINING_TOOLS=OFF \
+                -DDISABLE_CURL=ON \
+                -DDISABLE_ARCHIVE=ON \
                 -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
                 -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
               && make -j2
 
+          # Package output
           RUN mkdir -p /out/bin/tessdata && \
               cp build/bin/tesseract /out/bin/tesseract && \
               chmod +x /out/bin/tesseract
 
+          # Download a couple of language packs (add more if you need)
           RUN curl -L -o /out/bin/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata && \
               curl -L -o /out/bin/tessdata/por.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata
+
+          # Convenience: a tiny wrapper to run with the local tessdata folder
+          RUN cat > /out/bin/run_tesseract.sh <<'SH' && chmod +x /out/bin/run_tesseract.sh
+          #!/usr/bin/env bash
+          set -euo pipefail
+          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export TESSDATA_PREFIX="${DIR}"
+          exec "${DIR}/tesseract" "$@"
+          SH
           EOF
 
-          docker build -t tess-rocky8 .
-          CID=$(docker create tess-rocky8)
-          docker cp "$CID:/out" ./out
-          docker rm "$CID"
+          docker build -t tess-rocky8-fix1 .
+          CID="$(docker create tess-rocky8-fix1)"
+          rm -rf out
+          mkdir -p out
+          docker cp "${CID}:/out" ./out
+          docker rm "${CID}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
