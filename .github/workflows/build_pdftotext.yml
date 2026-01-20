@@ -7,42 +7,42 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (creates workspace)
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build inside CentOS 7 container (write tarball into github.workspace)
+      - name: Build bundle in CentOS 7 container (no heredocs)
         run: |
           echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          pwd
           ls -la
 
           docker run --rm \
-            -v "$GITHUB_WORKSPACE:/work" \
+            -v "${GITHUB_WORKSPACE}:/work" \
             -w /work \
             centos:7 bash -lc '
               set -euo pipefail
 
               echo "nameserver 1.1.1.1" > /etc/resolv.conf
 
-              cat > /etc/yum.repos.d/CentOS-Base.repo << "EOF"
-              [base]
-              name=CentOS-7 - Base
-              baseurl=http://vault.centos.org/7.9.2009/os/$basearch/
-              gpgcheck=0
-              enabled=1
-
-              [updates]
-              name=CentOS-7 - Updates
-              baseurl=http://vault.centos.org/7.9.2009/updates/$basearch/
-              gpgcheck=0
-              enabled=1
-
-              [extras]
-              name=CentOS-7 - Extras
-              baseurl=http://vault.centos.org/7.9.2009/extras/$basearch/
-              gpgcheck=0
-              enabled=1
-              EOF
+              # Write CentOS 7 vault repos safely (no heredoc)
+              printf "%s\n" \
+"[base]" \
+"name=CentOS-7 - Base" \
+"baseurl=http://vault.centos.org/7.9.2009/os/\$basearch/" \
+"gpgcheck=0" \
+"enabled=1" \
+"" \
+"[updates]" \
+"name=CentOS-7 - Updates" \
+"baseurl=http://vault.centos.org/7.9.2009/updates/\$basearch/" \
+"gpgcheck=0" \
+"enabled=1" \
+"" \
+"[extras]" \
+"name=CentOS-7 - Extras" \
+"baseurl=http://vault.centos.org/7.9.2009/extras/\$basearch/" \
+"gpgcheck=0" \
+"enabled=1" \
+> /etc/yum.repos.d/CentOS-Base.repo
 
               yum clean all
               yum makecache fast
@@ -53,25 +53,29 @@ jobs:
 
               cp -v /usr/bin/pdftotext /work/out/bin/
 
+              # Bundle libs
               ldd /usr/bin/pdftotext | awk "/=>/ {print \$3}" | while read -r lib; do
                 if [ -f "$lib" ]; then
                   cp -v "$lib" /work/out/lib/
                 fi
               done
 
+              # Loader (sometimes helps)
               if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
                 cp -v /lib64/ld-linux-x86-64.so.2 /work/out/lib/
               fi
 
-              cat > /work/out/pdftotext.sh << "EOF"
-              #!/bin/sh
-              DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-              export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
-              exec "$DIR/bin/pdftotext" "$@"
-              EOF
+              # Wrapper (no heredoc)
+              printf "%s\n" \
+"#!/bin/sh" \
+"DIR=\"\$(CDPATH= cd -- \"\$(dirname -- \"\$0\")\" && pwd)\"" \
+"export LD_LIBRARY_PATH=\"\$DIR/lib:\$LD_LIBRARY_PATH\"" \
+"exec \"\$DIR/bin/pdftotext\" \"\$@\"" \
+> /work/out/pdftotext.sh
+
               chmod +x /work/out/pdftotext.sh
 
-              # ✅ Create tarball in the mounted workspace
+              # Create tarball in the mounted workspace
               tar -czf /work/pdftotext-el7-bundle.tar.gz -C /work/out .
 
               echo "=== inside container /work ==="
@@ -80,6 +84,7 @@ jobs:
 
           echo "=== on runner after docker ==="
           ls -la
+          test -f pdftotext-el7-bundle.tar.gz
           ls -la pdftotext-el7-bundle.tar.gz
 
       - name: Upload artifact
