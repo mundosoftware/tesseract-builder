@@ -8,97 +8,129 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Build inside CentOS 7 (vault + modern CMake)
+      - name: Build inside CentOS 7 (vault + modern CMake + devtoolset-10)
+        shell: bash
         run: |
+          set -euo pipefail
+
           cat > Dockerfile <<'EOF'
           FROM centos:7
 
-          # CentOS 7 is EOL: point repos to vault
-          RUN sed -i 's/mirrorlist=/#mirrorlist=/g' /etc/yum.repos.d/CentOS-Base.repo && \
-              sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-Base.repo
+          # --- CentOS 7 is EOL: point base repos to vault ---
+          RUN set -euxo pipefail; \
+              sed -i 's/^mirrorlist=/#mirrorlist=/g' /etc/yum.repos.d/CentOS-Base.repo; \
+              sed -i 's|^#baseurl=http://mirror.centos.org/centos|baseurl=http://vault.centos.org/centos|g' /etc/yum.repos.d/CentOS-Base.repo; \
+              yum -y install yum-utils ca-certificates curl; \
+              yum clean all
 
-          # Core build deps (EL7)
-          RUN yum -y install epel-release && \
+          # --- Core build deps (EL7) ---
+          RUN set -euxo pipefail; \
+              yum -y install epel-release; \
               yum -y install \
                 gcc gcc-c++ make git \
                 autoconf automake libtool pkgconfig \
                 leptonica leptonica-devel \
                 libjpeg-turbo-devel libpng-devel libtiff-devel zlib-devel \
-                curl ca-certificates which tar gzip xz bash \
-              && yum clean all
+                which tar gzip xz bash; \
+              yum clean all
 
           # --- Install modern CMake (build tool only) ---
-          # Tesseract needs >= 3.18; EPEL on EL7 is 3.17.5.
-          # Use Kitware's official prebuilt installer.
+          # Tesseract needs >= 3.18; EPEL on EL7 is typically older.
           ARG CMAKE_VER=3.27.9
-          RUN mkdir -p /opt/cmake && \
+          RUN set -euxo pipefail; \
+              mkdir -p /opt/cmake; \
               curl -fsSL -o /tmp/cmake.sh \
-                https://github.com/Kitware/CMake/releases/download/v${CMAKE_VER}/cmake-${CMAKE_VER}-linux-x86_64.sh && \
-              chmod +x /tmp/cmake.sh && \
-              bash /tmp/cmake.sh --skip-license --prefix=/opt/cmake && \
-              ln -sf /opt/cmake/bin/cmake /usr/local/bin/cmake && \
-              ln -sf /opt/cmake/bin/ctest /usr/local/bin/ctest && \
-              ln -sf /opt/cmake/bin/cpack /usr/local/bin/cpack && \
+                "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VER}/cmake-${CMAKE_VER}-linux-x86_64.sh"; \
+              chmod +x /tmp/cmake.sh; \
+              bash /tmp/cmake.sh --skip-license --prefix=/opt/cmake; \
+              ln -sf /opt/cmake/bin/cmake /usr/local/bin/cmake; \
+              ln -sf /opt/cmake/bin/ctest /usr/local/bin/ctest; \
+              ln -sf /opt/cmake/bin/cpack /usr/local/bin/cpack; \
               cmake --version
+
+          # --- Fix (recommended): write proper SCLo repo files to vault.centos.org ---
+          # Common gotcha: devtoolset packages live in SCLo repos (sclo + rh) and mirrorlist breaks on EOL.
+          RUN set -euxo pipefail; \
+              yum -y install centos-release-scl centos-release-scl-rh scl-utils; \
+              rm -f /etc/yum.repos.d/CentOS-SCLo-scl.repo /etc/yum.repos.d/CentOS-SCLo-rh.repo || true; \
+              cat > /etc/yum.repos.d/CentOS-SCLo-scl.repo <<'REPO'; \
+          [centos-sclo-sclo]
+          name=CentOS-7 - SCLo sclo
+          baseurl=http://vault.centos.org/centos/7.9.2009/sclo/x86_64/sclo/
+          enabled=1
+          gpgcheck=1
+          gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+          skip_if_unavailable=1
+          metadata_expire=6h
+          REPO
+              cat > /etc/yum.repos.d/CentOS-SCLo-rh.repo <<'REPO'; \
+          [centos-sclo-rh]
+          name=CentOS-7 - SCLo rh
+          baseurl=http://vault.centos.org/centos/7.9.2009/sclo/x86_64/rh/
+          enabled=1
+          gpgcheck=1
+          gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+          skip_if_unavailable=1
+          metadata_expire=6h
+          REPO
+              # Optional sanity check (makes logs obvious)
+              yum -y clean all; \
+              yum -y makecache fast; \
+              yum repolist; \
+              # quick network sanity (fails fast if vault blocked)
+              curl -fsSI http://vault.centos.org/centos/7.9.2009/sclo/x86_64/sclo/ >/dev/null; \
+              curl -fsSI http://vault.centos.org/centos/7.9.2009/sclo/x86_64/rh/ >/dev/null
+
+          # --- Install GCC10 via devtoolset-10 ---
+          RUN set -euxo pipefail; \
+              yum -y install devtoolset-10-gcc devtoolset-10-gcc-c++; \
+              yum clean all
 
           WORKDIR /src
 
           # Pin to a stable release tag (reproducible)
           ARG TESS_TAG=5.3.3
-          RUN git clone --depth 1 --branch ${TESS_TAG} https://github.com/tesseract-ocr/tesseract.git
+          RUN set -euxo pipefail; \
+              git clone --depth 1 --branch "${TESS_TAG}" https://github.com/tesseract-ocr/tesseract.git
 
           WORKDIR /src/tesseract
 
-            # Install Developer Toolset 10 (GCC 10) and related packages
-            # Robustly rewrite SCL repo entries to vault.centos.org (EL7 is EOL),
-            # mark SCL repos as skippable if unavailable, and print repos for debugging.
-            RUN yum -y install centos-release-scl yum-utils && \
-              # For any SCL repo file: comment out mirrorlist lines and replace mirror.centos.org with vault.centos.org
-              for f in /etc/yum.repos.d/*scl* /etc/yum.repos.d/CentOS-SCLo*; do \
-                [ -e "$f" ] || continue; \
-                sed -i 's/^mirrorlist=/#mirrorlist=/g' "$f" || true; \
-                sed -i 's|mirror.centos.org|vault.centos.org/centos|g' "$f" || true; \
-              done && \
-              # Set skip_if_unavailable for common SCL repos to avoid transient failures
-              yum-config-manager --save --setopt=centos-sclo-sclo.skip_if_unavailable=true || true; \
-              yum-config-manager --save --setopt=centos-sclo-rh.skip_if_unavailable=true || true; \
-              # Show resulting repo files to help debugging if things still fail
-              echo '--- SCL repo files ---' && ls -l /etc/yum.repos.d/*scl* 2>/dev/null || true; \
-              grep -H "^baseurl\|^mirrorlist\|^name\|^enabled" /etc/yum.repos.d/*scl* 2>/dev/null || true; \
-              # Install devtoolset packages
-              yum -y install devtoolset-10-gcc devtoolset-10-gcc-c++ && \
-              yum clean all
-
-          # Build (run inside SCL-enabled environment so CMake sees GCC10/C++17)
-          RUN scl enable devtoolset-10 -- bash -c '\
-              set -euo pipefail && \
-              which gcc && gcc --version && which g++ && g++ --version && \
-              mkdir -p build && cd build && \
+          # Build (inside SCL env so CMake sees GCC10/C++17)
+          RUN scl enable devtoolset-10 -- bash -lc '\
+              set -euo pipefail; \
+              echo "GCC:"; which gcc; gcc --version; \
+              echo "G++:"; which g++; g++ --version; \
+              mkdir -p build && cd build; \
               cmake .. \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_TRAINING_TOOLS=OFF \
                 -DDISABLE_CURL=ON \
                 -DDISABLE_ARCHIVE=ON \
                 -DCMAKE_C_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
-                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic" \
-              && make -j2'
+                -DCMAKE_CXX_FLAGS="-O2 -pipe -march=x86-64 -mtune=generic"; \
+              make -j2 \
+          '
 
           # Stage output files
-          RUN mkdir -p /out/bin/tessdata && \
+          RUN set -euxo pipefail; \
+              mkdir -p /out/bin/tessdata; \
               cp -v /src/tesseract/build/bin/tesseract /out/bin/tesseract
 
           # Wrapper script (sets TESSDATA_PREFIX)
-          RUN cat > /out/bin/run_tesseract.sh <<'SH' && chmod +x /out/bin/run_tesseract.sh
+          RUN set -euxo pipefail; \
+              cat > /out/bin/run_tesseract.sh <<'SH'; \
           #!/usr/bin/env bash
           set -euo pipefail
           HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
           export TESSDATA_PREFIX="${HERE}"
           exec "${HERE}/tesseract" "$@"
           SH
+              chmod +x /out/bin/run_tesseract.sh
 
           # Download tessdata (eng + por)
-          RUN curl -fsSL -o /out/bin/tessdata/eng.traineddata \
-                https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata && \
+          RUN set -euxo pipefail; \
+              curl -fsSL -o /out/bin/tessdata/eng.traineddata \
+                https://github.com/tesseract-ocr/tessdata_best/raw/main/eng.traineddata; \
               curl -fsSL -o /out/bin/tessdata/por.traineddata \
                 https://github.com/tesseract-ocr/tessdata_best/raw/main/por.traineddata
 
@@ -107,7 +139,7 @@ jobs:
           RUN tar -czf /out/tesseract-el7.tar.gz bin
           EOF
 
-          docker build -t tesseract-el7 .
+          docker build --pull=false -t tesseract-el7 .
           docker create --name tesseract-el7-container tesseract-el7
           docker cp tesseract-el7-container:/out/tesseract-el7.tar.gz ./tesseract-el7.tar.gz
           docker rm -f tesseract-el7-container
